@@ -67,6 +67,9 @@ function Upload(){
     setmess('Error generating PDF: ' + error.message);
   }
 }}>Generate Seating PDF</button>
+<pre style={{ textAlign: "left", background: "#f4f4f4", padding: "10px", borderRadius: "5px", maxHeight: "300px", overflow: "auto" }}>
+      {JSON.stringify(json, null, 2)}
+    </pre>
                </div>
             
             )}

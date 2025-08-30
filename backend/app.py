@@ -40,7 +40,8 @@ def upload_excel():
                         })
                 except (ValueError, TypeError):
                     continue
-
+    for hall in hall_grouped:
+        hall_grouped[hall] = sorted(hall_grouped[hall], key=lambda x: x["students_count"], reverse=True)
     return jsonify(hall_grouped)
 
 if __name__ == '__main__':

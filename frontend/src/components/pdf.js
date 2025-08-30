@@ -1,24 +1,9 @@
 import jsPDF from "jspdf";
-import "jspdf-autotable";
-import logo from "./CIT_logo.png"; // logo image
+import autoTable from "jspdf-autotable";
+import supabase from "../supabase/client";  
+import logo from "./CIT_logo.png";
 
-const deptCodeMap = {
-  CSE: "CS",
-  IT: "IT",
-  CIVIL: "CE",
-  ECE: "EC",
-  MEC: "ME",
-  MCT: "MT",
-  BME: "BM",
-  AIDS: "AD",
-  AIML: "AM",
-  ACT: "AC",
-  VLSI: "VL",
-  CSBS: "CB",
-  EEE: "EE",
-  "CSE-CS": "CZ",
-};
-
+// All halls
 const hallOrder = [
   "F8","F9","F22","F23","S1","S2","S3","S4","S5","S6","S7","S8","S10","S15",
   "S16","S17","S18","S20","S21","S22","S23","S24","S26","S27","MS1","MS2","MS3",
@@ -26,150 +11,161 @@ const hallOrder = [
   "T12","T13","T14","T15","T16","T17","T18","T20","T21"
 ];
 
+// Year and dept mappings
+const yearTableMap = { I: "YEAR_I", II: "YEAR_II", III: "YEAR_III", IV: "YEAR_IV", "CITAR-III": "CITAR_III" };
+const deptMap = {
+  "CIVIL":"B.E. Civil","EEE":"B.E. EEE","ECE":"B.E. ECE","MECH":"B.E. Mech","MCT":"B.E. Mctr",
+  "BME":"B.E. BME","IT":"B.Tech.IT","AIDS":"B.Tech.AI-DS","CSE-AIML":"B.E. CSE (AI-ML)",
+  "ECE-ACT":"B.E. ECE(ACT)","ECE-VLSI":"B.E. EE-VLSI","CSE":"B.E. CSE","CSBS":"B.Tech.CSBS",
+  "CSE-CS":"B.E. CSE (CS)"
+};
 
-  const getYearPrefix = (year, dept) => {
-    const yearCodeMap = {
-      "1st": "25",
-      "2nd": "23",
-      "3rd": "23",
-      "CITAR-3rd": "40001",
-      "4th": "22",
-    };
-    const yearCode = yearCodeMap[year] || "XX";
-    const deptCode = deptCodeMap[dept] || "XX";
-    return `${yearCode}${deptCode}`;
-  };
-  const generateSeatingPDF = (jsonData) => {
-    if (!jsonData) return;
-    const doc = new jsPDF();
-    const rollCounters = {};
+// Fetch roll numbers
+async function getRollNumbers(year, deptExcel) {
+  const deptDB = deptMap[deptExcel];
+  if (!deptDB) return [];
 
-    hallOrder.forEach((hall, hIndex) => {
-      const hallStudents = jsonData[hall];
-      if (!hallStudents || hallStudents.length === 0) return;
+  const tableName = yearTableMap[year];
+  if (!tableName) return [];
 
-      if (hIndex > 0) doc.addPage();
+  const { data, error } = await supabase
+    .from(tableName)
+    .select('"Register No"')
+    .eq("Dept", deptDB)
+    .order("Sl", { ascending: true });
 
-      try {
-        doc.addImage(logo, "PNG", 10, 8, 30, 18);
-      } catch {}
+  if (error) return [];
+  return data.map(d => String(d["Register No"]));
+}
 
-      doc.setFontSize(18);
-      doc.text("Seating Arrangement", 105, 24, { align: "center" });
-      doc.setFontSize(14);
-      doc.text(`Hall: ${hall}`, 105, 34, { align: "center" });
 
-      const students = [];
-      hallStudents.forEach((s) => {
-        const key = `${s.year}__${s.department}`;
-        if (!rollCounters[key]) rollCounters[key] = 1;
-        const prefix = getYearPrefix(s.year, s.department);
-        for (let i = 0; i < s.students_count; i++) {
-          students.push({
-            roll: `${prefix}${String(rollCounters[key]).padStart(4, "0")}`,
-            year: s.year,
-            department: s.department,
-          });
-          rollCounters[key]++;
+export default async function generateSeatingPDF(jsonData) {
+  if (!jsonData) return;
+
+  const doc = new jsPDF();
+  const rollCounters = {};
+  const maxRows = 7;
+  const maxCols = 5;
+  const pageHeight = doc.internal.pageSize.height;
+  const sectionHeight = (pageHeight - 40) / 2; // two halls per page
+  let currentHallOnPage = 0; // 0 or 1
+  let yStart = 40;
+
+  // Draw page title and logo
+  function drawTitle() {
+    try { doc.addImage(logo, "PNG", 10, 8, 30, 18); } catch {}
+    doc.setFontSize(18);
+    doc.text("Seating Arrangement", 105, 25, { align: "center" });
+  }
+
+  drawTitle();
+
+  for (let hIndex = 0; hIndex < hallOrder.length; hIndex++) {
+    const hall = hallOrder[hIndex];
+    const hallStudents = jsonData[hall];
+    if (!hallStudents || hallStudents.length === 0) continue;
+
+    const students = [];
+
+    // Prepare roll numbers for students
+    for (const s of hallStudents) {
+      const key = `${s.year}__${s.department}`;
+      if (!rollCounters[key]) {
+        const rolls = await getRollNumbers(s.year, s.department);
+        rollCounters[key] = { used: 0, rolls };
+      }
+      for (let i = 0; i < s.students_count; i++) {
+        const roll = rollCounters[key].rolls[rollCounters[key].used];
+        if (!roll) continue;
+        students.push({ ...s, roll });
+        rollCounters[key].used++;
+      }
+    }
+
+    if (students.length === 0) continue;
+
+    // Group by year & dept for alternating seating
+    const groupMap = new Map();
+    students.forEach(s => {
+      const key = `${s.year}__${s.department}`;
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key).push(s);
+    });
+
+    const queues = [...groupMap.entries()].map(([k, arr]) => ({ key: k, arr: [...arr] }));
+    const seatList = [];
+
+    while (queues.some(q => q.arr.length > 0)) {
+      let firstStudent = null, firstIndex = -1;
+      for (let i = 0; i < queues.length; i++) {
+        if (queues[i].arr.length > 0) { firstStudent = queues[i].arr.shift(); firstIndex = i; break; }
+      }
+      if (!firstStudent) break;
+
+      let secondStudent = null;
+      for (let i = 0; i < queues.length; i++) {
+        if (i === firstIndex) continue;
+        if (queues[i].arr.length === 0) continue;
+        const candidate = queues[i].arr[0];
+        if (candidate.year !== firstStudent.year && candidate.department !== firstStudent.department) {
+          secondStudent = queues[i].arr.shift(); break;
         }
-      });
+      }
 
-      const groupMap = new Map();
-      students.forEach((s) => {
-        const key = `${s.year}__${s.department}`;
-        if (!groupMap.has(key)) groupMap.set(key, []);
-        groupMap.get(key).push(s);
-      });
-
-      const queues = [...groupMap.entries()].map(([k, arr]) => ({ key: k, arr: [...arr] }));
-      const seatList = [];
-      while (queues.some((q) => q.arr.length > 0)) {
-        let firstStudent = null;
-        let firstIndex = -1;
-        for (let i = 0; i < queues.length; i++) {
-          if (queues[i].arr.length > 0) {
-            firstStudent = queues[i].arr.shift();
-            firstIndex = i;
-            break;
-          }
-        }
-        if (!firstStudent) break;
-
-        let secondStudent = null;
+      if (!secondStudent) {
         for (let i = 0; i < queues.length; i++) {
           if (i === firstIndex) continue;
           if (queues[i].arr.length === 0) continue;
-          const candidate = queues[i].arr[0];
-          if (candidate.year !== firstStudent.year && candidate.department !== firstStudent.department) {
-            secondStudent = queues[i].arr.shift();
-            break;
-          }
-        }
-        if (!secondStudent) {
-          for (let i = 0; i < queues.length; i++) {
-            if (i === firstIndex) continue;
-            if (queues[i].arr.length === 0) continue;
-            secondStudent = queues[i].arr.shift();
-            break;
-          }
-        }
-
-        if (secondStudent) seatList.push(`${firstStudent.roll}\n${secondStudent.roll}`);
-        else seatList.push(firstStudent.roll);
-      }
-
-      // Change grid to 7 rows × 5 columns
-      const rows = 7;
-      const cols = 5;
-      const grid = Array.from({ length: rows }, () => []);
-      let seatIndex = 0;
-      for (let c = 0; c < cols; c++) {
-        if (c % 2 === 0) {
-          for (let r = 0; r < rows; r++) grid[r].push(seatList[seatIndex++] || "");
-        } else {
-          for (let r = rows - 1; r >= 0; r--) grid[r].push(seatList[seatIndex++] || "");
+          secondStudent = queues[i].arr.shift(); break;
         }
       }
 
-      const snoGrid = Array.from({ length: rows }, () => Array(cols).fill(0));
-      let serial = 1;
-      for (let c = 0; c < cols; c++) {
-        if (c % 2 === 0) {
-          for (let r = 0; r < rows; r++) snoGrid[r][c] = serial++;
-        } else {
-          for (let r = rows - 1; r >= 0; r--) snoGrid[r][c] = serial++;
-        }
-      }
+      if (secondStudent) seatList.push(`${firstStudent.roll}\n${secondStudent.roll}`);
+      else seatList.push(firstStudent.roll);
+    }
 
-      const tableHeaders = [];
-      for (let i = 1; i <= cols; i++) {
-        tableHeaders.push(`Row ${i}`);
-        tableHeaders.push("S.No");
-      }
+    // Build grid
+    const grid = Array.from({ length: maxRows }, () => []);
+    let index = 0;
+    for (let c = 0; c < maxCols; c++) {
+      if (c % 2 === 0) for (let r = 0; r < maxRows; r++) grid[r].push(seatList[index++] || "");
+      else for (let r = maxRows - 1; r >= 0; r--) grid[r].push(seatList[index++] || "");
+    }
 
-      const tableBody = [];
-      for (let r = 0; r < rows; r++) {
-        const rowArr = [];
-        for (let c = 0; c < cols; c++) {
-          rowArr.push(grid[r][c]);
-          rowArr.push(String(snoGrid[r][c]));
-        }
-        tableBody.push(rowArr);
-      }
+    const snoGrid = Array.from({ length: maxRows }, () => Array(maxCols).fill(0));
+    let serial = 1;
+    for (let c = 0; c < maxCols; c++) {
+      if (c % 2 === 0) for (let r = 0; r < maxRows; r++) snoGrid[r][c] = serial++;
+      else for (let r = maxRows - 1; r >= 0; r--) snoGrid[r][c] = serial++;
+    }
 
-      doc.autoTable({
-            head: [tableHeaders],
-            body: tableBody,
-            startY: 50,
-            theme: "grid",
-            styles: { fontSize: 9, cellPadding: 2, valign: "middle" },
-            headStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: "bold" },
-      });
-    })
+    const tableHeaders = [];
+    for (let i = 1; i <= maxCols; i++) { tableHeaders.push(`Seat ${i}`); tableHeaders.push("S.No"); }
 
-    doc.save("hall_seating_arrangement.pdf");
-  };
+    const tableBody = [];
+    for (let r = 0; r < maxRows; r++) {
+      const rowArr = [];
+      for (let c = 0; c < maxCols; c++) { rowArr.push(grid[r][c]); rowArr.push(snoGrid[r][c].toString()); }
+      tableBody.push(rowArr);
+    }
 
+    // Set Y start for this hall section
+    const sectionTop = 40 + currentHallOnPage * sectionHeight;
+    doc.setFontSize(14);
+    doc.text(`Hall: ${hall}`, 105, sectionTop, { align: "center" });
 
+    autoTable(doc, {
+      head: [tableHeaders],
+      body: tableBody,
+      startY: sectionTop + 5,
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 2, valign: "middle" },
+      headStyles: { fillColor: [240, 240, 240], textColor: [0,0,0], fontStyle: "bold" },
+    });
 
-export default generateSeatingPDF;
+    currentHallOnPage++;
+    if (currentHallOnPage >= 2) { doc.addPage(); drawTitle(); currentHallOnPage = 0; }
+  }
+
+  doc.save("hall_seating_arrangement.pdf");
+}
