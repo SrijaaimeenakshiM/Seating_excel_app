@@ -1,6 +1,6 @@
 import React,{useState} from "react";
 import axios from 'axios';
-import generateSeatingPDF from "./pdf2";
+import generateSeatingPDF from "./pdf1";
 function Upload(){
     const[file,setfile]=useState(null);
     const[json,setjson]=useState(null);
