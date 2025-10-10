@@ -1,6 +1,8 @@
 {
   "dependencies": {
     "jspdf": "^3.0.1",
-    "jspdf-autotable": "^5.0.2"
+    "jspdf-autotable": "^5.0.2",
+    "mongoose": "^8.18.2",
+    "xlsx": "^0.18.5"
   }
 }
